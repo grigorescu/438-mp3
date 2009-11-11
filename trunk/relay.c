@@ -1,4 +1,4 @@
-/*									tab:8
+/*									Tab:8
  *
  * relay.c - source file for TCP relay distributed for ECE/CS 338 F01 MP3
  *
@@ -55,8 +55,11 @@
 #include "fq.h"
 #include "relay.h"
 #include "mp3.h"
+#include "crc.c"
 
+#define SWP_BUFFER_SIZE 32  // Sliding Window Protocol buffer size
 
+udp_channel_t* udpchans [2*MAX_CHANNELS];
 
 /* A few useful wrapper functions for Posix calls.  They kill the process
    when an error occurs.   */
@@ -81,8 +84,7 @@ static void init_channels (pthread_attr_t* attr, int base_port,
 static int my_write (int fd, const void* buf, size_t n);
 static void open_and_activate_channel (channel_t* ct);
 static int set_up_target_socket (short int target_port);
-static void udp_init (udp_channel_t* uct, int port,
-		      struct sockaddr_in* peer_addr);
+static void udp_init (udp_channel_t* uct, int filedes);
 static void wake_threads (channel_t* ct, channel_state_t flag);
 
 /* Thread main functions. */
@@ -449,6 +451,10 @@ tcp_sender (void* v_ct)
     int is_active = 0, tcp_closed = 0, timeout = 0;
     fq_err_t rv;
 
+    unsigned char buffer[MAX_PKT_LEN*SWP_BUFFER_SIZE];
+    unsigned char bufferValid[SWP_BUFFER_SIZE] = {0};
+    int i;
+
     printlog ("%#08X INIT TCP_SENDER", (unsigned int)ct);
 
     while (1) {
@@ -462,6 +468,11 @@ tcp_sender (void* v_ct)
 		LAR = PREV_SEQ_NUM (0);
 		tcp_closed = 0;
 		timeout = 0;
+
+		for (i=0; i < SWP_BUFFER_SIZE; i+=1){
+		  bufferValid[i] = 0;
+		}
+
 		continue;
 	    }
 	} else if (ct->channel_state != CLOSE_CHANNEL_NONE) {
@@ -484,7 +495,7 @@ tcp_sender (void* v_ct)
 
 	    /* Read data from the TCP connection.  Deactivate channel
 	       if any error occurs. */
-	    if ((len = read (ct->fd, packet + 2, MAX_PKT_LEN - 2)) < 0) {
+	    if ((len = read (ct->fd, packet + 4, MAX_PKT_LEN - 4)) < 0) {
 		deactivate_channel (ct, CLOSE_CHANNEL_SENDER);
 		printlog ("%#08X READ FAILED IN TCP_SENDER", (unsigned int)ct);
 		is_active = 0;
@@ -496,7 +507,7 @@ tcp_sender (void* v_ct)
 		tcp_closed = 1;
 
 	    /* Fill in the header. */
-	    PKT_MAKE_HEADER (packet, tcp_closed, SEQ, ct->epoch);
+	    PKT_MAKE_HEADER (packet, 0, tcp_closed, ct->number, SEQ, ct->epoch, len);
 	    SEQ = NEXT_SEQ_NUM (SEQ);
 
 	    /* Send the packet, ignoring errors. */
@@ -510,7 +521,7 @@ tcp_sender (void* v_ct)
 	len = MAX_PKT_LEN;
 	if ((rv = fq_dequeue (uct->recv, packet, &len)) != FQ_OK) {
 
-	    if (rv == FQ_QUEUE_EMPTY) {
+	    if (rv == FQ_QUEUE_EMPTY && !bufferValid[0]) {
 		/* Empty queue; may need to wake tcp_helper to make data 
 		   available. */
 		if (!tcp_closed) {
@@ -550,7 +561,7 @@ tcp_sender (void* v_ct)
 
 	    /* Still no packet?  Check for errors, or restart loop for
 	       data arrival and channel activation changes. */
-	    if (rv != FQ_OK) {
+	    if (rv != FQ_OK && !bufferValid[0]) {
 		/* Check for failure caused by something besides an 
 		   empty queue. */
 		if (rv != FQ_QUEUE_EMPTY) {
@@ -562,6 +573,12 @@ tcp_sender (void* v_ct)
 	    }
 	}
 
+	if (bufferValid[0]){
+	  for (i=0; i<MAX_PKT_LEN; i++)
+	    packet[i] = buffer[i];
+	  len = PKT_LENGTH(packet);
+	}
+		
 	/* Discard if too short (should never happen). */
 	if (len < 2) 
 	    continue;
@@ -578,8 +595,16 @@ tcp_sender (void* v_ct)
 	/* Advance LAR by 1 to the value we are expecting to receive. */
 	LAR = NEXT_SEQ_NUM (LAR);
 
+        // Move buffers down
+
+	for (i=0; i < SWP_BUFFER_SIZE-1; i+=1){
+	  buffer[MAX_PKT_LEN*i] = buffer[MAX_PKT_LEN*(i+1)];
+	  bufferValid[i] = bufferValid[i+1];
+	}
+	bufferValid[SWP_BUFFER_SIZE-1] = 0;
+
         /* Out of order packets can be handled more aggressively. */
-	if ((seq_num = PKT_SEQ_NUM (packet)) != LAR) {
+	if (((seq_num = PKT_SEQ_NUM (packet)) < LAR) || (seq_num > LAR+SWP_BUFFER_SIZE)){
 	    deactivate_channel (ct, CLOSE_CHANNEL_SENDER);
 	    printlog ("%#08X OUT OF ORDER OR DUPLICATE ACK IN TCP_SENDER",
 		  (unsigned int)ct);
@@ -587,9 +612,15 @@ tcp_sender (void* v_ct)
 	    continue;
 	}
 
+	if ((seq_num >= LAR) || (seq_num < LAR+SWP_BUFFER_SIZE))
+	  {
+	    buffer[(LAR-seq_num)*MAX_PKT_LEN] = packet;
+	    bufferValid[(LAR-seq_num)] = 1;
+	  }
+
 	/* Finally, if we've gotten the ACK for the last packet,
 	   we're done. */
-	if (PKT_IS_LAST (packet)) {
+	if (PKT_IS_LAST (packet) && (LAR == seq_num)) {
 	    deactivate_channel (ct, CLOSE_CHANNEL_SENDER);
 	    printlog ("%#08X STREAM SEND COMPLETED IN TCP_SENDER",
 		  (unsigned int)ct);
@@ -613,6 +644,11 @@ tcp_receiver (void* v_ct)
     int is_active = 0;
     fq_err_t rv;
 
+    unsigned char buffer[SWP_BUFFER_SIZE*MAX_PKT_LEN];
+    unsigned char bufferValid[SWP_BUFFER_SIZE] = {0};
+    int i;
+    
+
     printlog ("%#08X INIT TCP_RECEIVER", (unsigned int)ct);
 
     while (1) {
@@ -632,6 +668,10 @@ tcp_receiver (void* v_ct)
 		is_active = 1;
 		/* Reset NFE. */
 		NFE = 0;
+
+		for (i=0; i < SWP_BUFFER_SIZE; i+=1){
+		  bufferValid[i] = 0;
+		}
 		continue;
 	    }
 	} else if (ct->channel_state != CLOSE_CHANNEL_NONE) {
@@ -645,7 +685,7 @@ tcp_receiver (void* v_ct)
 	len = MAX_PKT_LEN;
 	if ((rv = fq_dequeue (uct->recv, packet, &len)) != FQ_OK) {
 
-	    if (rv == FQ_QUEUE_EMPTY) {
+	    if (rv == FQ_QUEUE_EMPTY && !bufferValid[0]) {
 		/* Empty queue: wait for a packet or other wakeup event. */
 		get_lock (&uct->recv_lock);
 		len = MAX_PKT_LEN;
@@ -663,16 +703,23 @@ tcp_receiver (void* v_ct)
 
 	    /* Still no packet?  Check for errors, or restart loop for
 	       channel activation changes. */
-	    if (rv != FQ_OK) {
+	    if (rv != FQ_OK && !bufferValid[0]) {
 		/* Check for failure caused by something besides an 
 		   empty queue. */
 		if (rv != FQ_QUEUE_EMPTY) {
 		    fq_error ("fq_dequeue failed in tcp_receiver", rv);
 		    exit (EXIT_PANIC);
 		}
+
 		/* No packet, no failure; restart loop. */
 		continue;
 	    }
+	}
+
+	if (bufferValid[0]){
+	  for (i=0; i<MAX_PKT_LEN; i++)
+	    packet[i] = buffer[i];
+ 	  len = PKT_LENGTH(packet);
 	}
 
 	/* Discard if too short (should never happen). */
@@ -680,8 +727,8 @@ tcp_receiver (void* v_ct)
 	    continue;
 
 	/* We've got a packet. */
-	printlog ("%#08X TCP_RECEIVER GOT PACKET %02X:%02X%s(%d bytes)",
-	      (unsigned int)ct, PKT_EPOCH (packet), PKT_SEQ_NUM (packet), 
+	printlog ("%#08X TCP_RECEIVER GOT PACKET %02X:%03X ON CHANNEL %02X %s(%d bytes)",
+		  (unsigned int)ct, PKT_EPOCH (packet), PKT_SEQ_NUM (packet), PKT_CHAN_NUM(packet),
 	      (PKT_IS_LAST (packet) ? " LAST " : " "), len);
         if (mode == MODE_TCP_TARGET) {
 	    /* Discard packets received when inactive, and discard packets
@@ -693,7 +740,10 @@ tcp_receiver (void* v_ct)
 	       lost packet) becomes irrelevant once reliable delivery is 
 	       added, it's not worth adding another synchronization round 
 	       to verify channel activation. */
-	    if (!is_active || (epoch = PKT_EPOCH (packet)) != ct->epoch)
+	  
+	  //Also if CRC doesn't match up.
+	  
+	  if (!is_active || (epoch = PKT_EPOCH (packet)) != ct->epoch || PKT_CRC(packet) != calculate_crc8(packet,255))
 		continue;
 	} else {
 	    /* Forwarding mode: the first packet received for this epoch,
@@ -737,32 +787,49 @@ tcp_receiver (void* v_ct)
 	}
 
 	/* Is the packet the one we are expecting? */
-	if ((seq_num = PKT_SEQ_NUM (packet)) == NFE) {
-	    NFE = NEXT_SEQ_NUM (seq_num);
+	if (((seq_num = PKT_SEQ_NUM (packet)) >= NFE) && (seq_num < NFE+SWP_BUFFER_SIZE)) {
+	  if (NFE == seq_num)
+	    {
+	      NFE = NEXT_SEQ_NUM (seq_num);
+	      
+	      // Move buffers down
+	      
+	      for (i=0; i < SWP_BUFFER_SIZE-1; i+=1){
+		buffer[MAX_PKT_LEN*i] = buffer[MAX_PKT_LEN*(i+1)];
+		bufferValid[i] = bufferValid[i+1];
+	      }
+	      bufferValid[SWP_BUFFER_SIZE-1] = 0;
 
-	    /* If so, write packet to TCP socket. */
-	    if (my_write (ct->fd, packet + 2, len - 2) != len - 2) {
+	      /* If so, write packet to TCP socket. */
+	      if (my_write (ct->fd, packet + 4, len - 4) != len - 4) {
 		/* Write failed!  Close the connection. */
 		printlog ("%#08X WRITE FAILED IN TCP_RECEIVER", (unsigned int)ct);
 		deactivate_channel (ct, CLOSE_CHANNEL_RECEIVER);
 		is_active = 0;
 		continue;
+	      }
+	    }
+	  else
+	    {
+	      buffer[(NFE-seq_num)*MAX_PKT_LEN] = packet;
+	      bufferValid[(NFE-seq_num)] = 1;
 	    }
 	} else {
 	    /* Out of order packet!  Construct an ACK for the previous
 	       sequence number. */
-	    PKT_MAKE_HEADER (packet, 0, PREV_SEQ_NUM (seq_num), epoch);
+	  PKT_MAKE_HEADER (packet, 1, 0, ct->number, PREV_SEQ_NUM (seq_num), epoch, len);
+
 	}
 
 	/* Send an ACK.  With our structures, we can simply return
-	   the first two bytes of the packet.  We ignore errors. */
-	(void)send (uct->fd, packet, 2, 0);
-	printlog ("%#08X TCP_RECEIVER SENT ACK %02X:%02X%s(2 bytes)",
+	   the first three bytes of the packet.  We ignore errors. */
+	(void)send (uct->fd, packet, 3, 0);
+	printlog ("%#08X TCP_RECEIVER SENT ACK %02X:%02X%s(3 bytes)",
 	      (unsigned int)ct, PKT_EPOCH (packet), PKT_SEQ_NUM (packet), 
 	      (PKT_IS_LAST (packet) ? " LAST " : " "));
 
 	/* Was the packet received the last? */
-	if (PKT_IS_LAST (packet)) {
+	if (PKT_IS_LAST (packet) && NFE == seq_num) {
 	    printlog ("%#08X RECEIVED LAST PACKET IN TCP_RECEIVER",
 		  (unsigned int)ct);
 	    deactivate_channel (ct, CLOSE_CHANNEL_RECEIVER);
@@ -786,15 +853,18 @@ udp_receiver (void* v_uct)
     int trash;
     socklen_t tlen;
 
+    int chanNum;
+
     printlog ("%#08X INIT UDP_RECEIVER", (unsigned int)uct);
 
     while (1) {
 	/* Ignore errors. */
 	tlen = sizeof (trash);
-	if ((len = mp3_recvfrom (uct->fd, packet, MAX_PKT_LEN, 0,
-				 (struct sockaddr*)&trash, &tlen)) >= 0) {
-	    if ((rv = fq_enqueue (uct->recv, packet, len, &uct->recv_cond,
-				  &uct->recv_lock)) != FQ_OK &&
+	if ((len = mp3_recvfrom (uct->fd, packet, MAX_PKT_LEN, 0,(struct sockaddr*)&trash, &tlen)) >= 0) 
+	  {
+	    chanNum = PKT_CHAN_NUM(packet);
+	    if ((rv = fq_enqueue (udpchans[chanNum]->recv, packet, len, &udpchans[chanNum]->recv_cond,
+				  &udpchans[chanNum]->recv_lock)) != FQ_OK &&
 		rv != FQ_ITEM_DISCARDED) {
 		fq_error ("fq_enqueue failed in udp_receiver", rv);
 		exit (EXIT_PANIC);
@@ -908,6 +978,7 @@ deactivate_channel (channel_t* ct, channel_state_t flag)
    at <base_port>, and pairs of sockets are connected between this machine
    and the peer at <peer_addr>.
 */
+
 static void
 init_channels (pthread_attr_t* attr, int base_port,
 	       struct sockaddr_in* peer_addr)
@@ -924,6 +995,10 @@ init_channels (pthread_attr_t* attr, int base_port,
 	exit (EXIT_PANIC);
     }
 
+    //We will only need one file descriptor open.  We are multiplexing on one port.
+    peer_addr->sin_port = htons (base_port + 2 * i + 1);
+    int filedes = create_udp_socket (base_port, peer_addr);
+
     for (i = 0; i < MAX_CHANNELS; i++) {
 	chan_tab[i].epoch           = 0;
 	chan_tab[i].fd              = -1;
@@ -936,24 +1011,28 @@ init_channels (pthread_attr_t* attr, int base_port,
 	    fputs ("pthread mutex or cond init failed\n", stderr);
 	    exit (EXIT_PANIC);
 	}
-	peer_addr->sin_port = htons (base_port + 2 * i + 1);
-	udp_init (&chan_tab[i].udp[0], base_port + 2 * i, peer_addr);
-	peer_addr->sin_port = htons (base_port + 2 * i);
-	udp_init (&chan_tab[i].udp[1], base_port + 2 * i + 1, peer_addr);
+
+	//Pass our single file descriptor to each udp process that we create
+	udp_init (&chan_tab[i].udp[0], filedes);
+	udp_init (&chan_tab[i].udp[1], filedes);
+
+	udpchans[2*i] = &chan_tab[i].udp[0];
+	udpchans[2*i+1] = &chan_tab[i].udp[1];
 
 	if (pthread_create (&chan_tab[i].helper_id, attr, tcp_helper,
 				&chan_tab[i]) != 0 ||
 	    pthread_create (&trash, attr, tcp_receiver,
 				&chan_tab[i]) != 0 ||
-	    pthread_create (&trash, attr, tcp_sender, &chan_tab[i]) != 0 ||
-	    pthread_create (&trash, attr, udp_receiver,
-			    &chan_tab[i].udp[0]) != 0 ||
-	    pthread_create (&trash, attr, udp_receiver,
-			    &chan_tab[i].udp[1]) != 0) {
+	    pthread_create (&trash, attr, tcp_sender, &chan_tab[i]) != 0 ){
 	    fputs ("pthread create failed\n", stderr);
 	    exit (EXIT_PANIC);
-	}
+	    }
     }
+    if (pthread_create (&trash, attr, udp_receiver, &chan_tab[0].udp[0]) != 0) {
+      	    fputs ("pthread create failed\n", stderr);
+	    exit (EXIT_PANIC);
+    }
+
 }
 
 
@@ -1072,11 +1151,11 @@ set_up_target_socket (short int target_port)
    bound to port <port> and connected to <peer_addr>.
 */
 static void
-udp_init (udp_channel_t* uct, int port, struct sockaddr_in* peer_addr)
+udp_init (udp_channel_t* uct, int filedes)
 {
     fq_err_t rv;
 
-    uct->fd = create_udp_socket (port, peer_addr);
+    uct->fd = filedes;
     if (pthread_mutex_init (&uct->recv_lock, NULL) != 0 ||
         pthread_cond_init (&uct->recv_cond, NULL) != 0) {
 	fputs ("pthread mutex or cond init failed\n", stderr);
