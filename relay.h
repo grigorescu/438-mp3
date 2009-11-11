@@ -102,30 +102,45 @@ struct channel_t {
 
     /* UDP channel 0 supports TCP send, UDP channel 1 supports TCP receive. */
     udp_channel_t udp[2];
+
+    int number;
 };
 
 
 /* 
    packet frame format access macros
 
-   ---------------------------------------------------------
-   | LAST(1b)/SEQ_NUM(7b) | EPOCH(1B) | up to 254B of data |
-   ---------------------------------------------------------
+xx ---------------------------------------------------------
+xx | LAST(1b)/SEQ_NUM(7b) | EPOCH(1B) | up to 254B of data |
+xx ---------------------------------------------------------
 
    You'll need to add things like CRC and channel number and will
    probably want to expand the space of sequence numbers.
-*/
-#define PKT_IS_LAST(p) (((p)[0] & 0x80) == 0x80)
-#define PKT_SEQ_NUM(p) ((int)((p)[0] & 0x7F))
-#define PKT_EPOCH(p)   ((int)((p)[1]))
+
+   -------------------------------------------------------------------------------------------------------
+   | LAST(1b)/CHANNEL(4b)/ACK(1b)/SEQ_NUM(10b) | EPOCH(1B) | LENGTH(1B) | up to 252B of data | CRC-8(1B) |
+   -------------------------------------------------------------------------------------------------------
+
+3*/
+#define PKT_IS_ACK(p)  ((p)[0] & 0x04)
+#define PKT_IS_LAST(p) ((p)[0] & 0x80)
+#define PKT_CHAN_NUM(p) ((int)((p)[0] & 0x7C))
+#define PKT_SEQ_NUM(p) ((int)(((p)[0] & 0x03) << 8)|((p)[1]))
+#define PKT_EPOCH(p)   ((int)((p)[2]))
+#define PKT_LENGTH(p)  ((int)((p)[3]))
 /* The braces make the macro into a single compound command. */
-#define PKT_MAKE_HEADER(p,is_last,seq_num,epoch) \
+#define PKT_MAKE_HEADER(p,isAck,isLast,channel,seqNum,epoch,length)	\
 {                                                \
-    (p)[0] = ((is_last) << 7) | (seq_num);       \
-    (p)[1] = (epoch);                            \
+    (p)[0] = (((isLast & 1) << 7) | ((isAck & 1) << 2) | ((channel & 0x0F) << 3) | (seqNum & 0x0300)); \
+    (p)[1] = (seqNum & 0x00FF);                 \
+    (p)[2] = (epoch);				\
+    (p)[3] = (length);                          \
+    (p)[255] = (calculate_crc8(p, 255) & 0xF);	\
 }
-#define PREV_SEQ_NUM(n) (((n) + 0x7F) & 0x7F)
-#define NEXT_SEQ_NUM(n) (((n) + 0x01) & 0x7F)
+
+#define PKT_CRC(p) ((int)(p[255]))
+#define PREV_SEQ_NUM(n) (((n) + 0x3FF) & 0x3FF)
+#define NEXT_SEQ_NUM(n) (((n) + 0x01) & 0x3FF)
 #define EPOCH_IS_EARLIER(e,f) \
 	(((((unsigned)(f)) - ((unsigned)(e))) & 0xFF) <= 0x80)
 
