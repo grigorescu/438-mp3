@@ -1,0 +1,24 @@
+Design Document Revisions:
+
+Message Formats
+	Upon further review, we have decided to go with a packet consisting of:
+	data/ack flag, a 10-bit sequence number, a 4-bit thread ID, an 8-bit epoch, an 8-bit length field, 252B of data, and an 8-bit CRC-8 checksum of this data. 
+
+Window Data Structure
+	This has remained the same as outlined in our Design Document.  Send and Receive Windows coordinate the reliability.
+	
+Window Operations
+	This remains unchanged as well.
+	
+Thread Assignments
+	We left the thread assignments the same as we had originally intended in the Design Document.
+	
+Head-of-Line Blocking
+	We intended to have threads time out in order to prevent head of line blocking.  This is still the case in our implementation.
+
+Fairness
+	We have let our implementation of the problem handle fairness.  Threads should be prevented from blocking other threads.
+	This is accomplished through our timeouts and implementation.
+	
+Channel Release
+	We kept our channel release implementation the same as we had outlined in the Design Document.  When a channel is no longer needed, the lock is released.
