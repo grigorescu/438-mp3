@@ -505,7 +505,7 @@ tcp_sender (void* v_ct)
 	    /* Check for TCP connection closure. */
 	    if (len == 0)
 		tcp_closed = 1;
-	    printlog(" ^^^^^^^^^^ ZEROING OUT REST OF PACKET, FROM %d TO %d", len+4, MAX_PKT_LEN-1);
+	    //printlog(" ^^^^^^^^^^ ZEROING OUT REST OF PACKET, FROM %d TO %d", len+4, MAX_PKT_LEN-1);
 	    /* Fill in the header. */
 	    for (i = len+4; i<MAX_PKT_LEN-1; i+=1) 
 	      packet[i] = 0;                       //zero out the rest
@@ -866,7 +866,7 @@ udp_receiver (void* v_uct)
 	if ((len = mp3_recvfrom (uct->fd, packet, MAX_PKT_LEN, 0,(struct sockaddr*)&trash, &tlen)) >= 0) 
 	  {
 	    chanNum = PKT_CHAN_NUM(packet);
-	    printlog("XXXX Received packet of length %02X, chanNum %02X, CRC %02X (actual: %02X)", len, chanNum, PKT_CRC(packet), calculate_crc8(packet,255));
+	    //printlog("XXXX Received packet of length %02X, chanNum %02X, CRC %02X (actual: %02X)", len, chanNum, PKT_CRC(packet), calculate_crc8(packet,255));
 	      if ((rv = fq_enqueue (udpchans[chanNum]->recv, packet, len, &udpchans[chanNum]->recv_cond,
 				    &udpchans[chanNum]->recv_lock)) != FQ_OK &&
 		  rv != FQ_ITEM_DISCARDED) {
