@@ -521,7 +521,7 @@ tcp_sender (void* v_ct)
 	len = MAX_PKT_LEN;
 	if ((rv = fq_dequeue (uct->recv, packet, &len)) != FQ_OK) {
 
-	    if (rv == FQ_QUEUE_EMPTY && !bufferValid[0]) {
+	  if (rv == FQ_QUEUE_EMPTY/* && !bufferValid[0]*/) {
 		/* Empty queue; may need to wake tcp_helper to make data 
 		   available. */
 		if (!tcp_closed) {
@@ -561,7 +561,7 @@ tcp_sender (void* v_ct)
 
 	    /* Still no packet?  Check for errors, or restart loop for
 	       data arrival and channel activation changes. */
-	    if (rv != FQ_OK && !bufferValid[0]) {
+	  if (rv != FQ_OK /*&& !bufferValid[0]*/) {
 		/* Check for failure caused by something besides an 
 		   empty queue. */
 		if (rv != FQ_QUEUE_EMPTY) {
@@ -573,11 +573,11 @@ tcp_sender (void* v_ct)
 	    }
 	}
 
-	if (bufferValid[0]){
+	/*	if (bufferValid[0]){
 	  for (i=0; i<MAX_PKT_LEN; i++)
 	    packet[i] = buffer[i];
 	  len = PKT_LENGTH(packet);
-	}
+	  }*/
 		
 	/* Discard if too short (should never happen). */
 	if (len < 2) 
@@ -686,7 +686,7 @@ tcp_receiver (void* v_ct)
 	len = MAX_PKT_LEN;
 	if ((rv = fq_dequeue (uct->recv, packet, &len)) != FQ_OK) {
 
-	    if (rv == FQ_QUEUE_EMPTY && !bufferValid[0]) {
+	  if (rv == FQ_QUEUE_EMPTY/* && !bufferValid[0]*/) {
 		/* Empty queue: wait for a packet or other wakeup event. */
 		get_lock (&uct->recv_lock);
 		len = MAX_PKT_LEN;
@@ -704,7 +704,7 @@ tcp_receiver (void* v_ct)
 
 	    /* Still no packet?  Check for errors, or restart loop for
 	       channel activation changes. */
-	    if (rv != FQ_OK && !bufferValid[0]) {
+	  if (rv != FQ_OK/* && !bufferValid[0]*/) {
 		/* Check for failure caused by something besides an 
 		   empty queue. */
 		if (rv != FQ_QUEUE_EMPTY) {
@@ -717,11 +717,11 @@ tcp_receiver (void* v_ct)
 	    }
 	}
 
-	if (bufferValid[0]){
+	/*	if (bufferValid[0]){
 	  for (i=0; i<MAX_PKT_LEN; i++)
 	    packet[i] = buffer[i];
  	  len = PKT_LENGTH(packet);
-	}
+	  }*/
 
 	/* Discard if too short (should never happen). */
 	if (len < 2) 
@@ -998,7 +998,7 @@ init_channels (pthread_attr_t* attr, int base_port,
     }
 
     //We will only need one file descriptor open.  We are multiplexing on one port.
-    peer_addr->sin_port = htons (base_port + 2 * i + 1);
+    peer_addr->sin_port = htons (base_port);
     int filedes = create_udp_socket (base_port, peer_addr);
 
     for (i = 0; i < MAX_CHANNELS; i++) {
