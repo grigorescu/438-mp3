@@ -801,7 +801,7 @@ tcp_receiver (void* v_ct)
 	      bufferValid[SWP_BUFFER_SIZE-1] = 0;
 
 	      /* If so, write packet to TCP socket. */
-	      if (my_write (ct->fd, packet + 4, len - 5) != len - 5) {
+	      if (my_write (ct->fd, packet + 4, PKT_LENGTH(packet)) !=  PKT_LENGTH(packet)) {
 		/* Write failed!  Close the connection. */
 		printlog ("%#08X WRITE FAILED IN TCP_RECEIVER", (unsigned int)ct);
 		deactivate_channel (ct, CLOSE_CHANNEL_RECEIVER);
@@ -873,9 +873,7 @@ udp_receiver (void* v_uct)
 		fq_error ("fq_enqueue failed in udp_receiver", rv);
 		exit (EXIT_PANIC);
 	    }
-	    else
-	      printlog("*** CRC FAIL!  Expected %02X, received %02X.", calculate_crc8(packet,255), PKT_CRC(packet));
-	}
+	  }
     }
 }
 
