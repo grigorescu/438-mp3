@@ -614,6 +614,7 @@ tcp_sender (void* v_ct)
 
 	if ((seq_num >= LAR) || (seq_num < LAR+SWP_BUFFER_SIZE))
 	  {
+	    printlog("%#08X PUTTING A PACKET INTO SEND BUFFER SLOT %d", (unsigned int)ct, LAR-seq_num);
 	    buffer[(LAR-seq_num)*MAX_PKT_LEN] = packet;
 	    bufferValid[(LAR-seq_num)] = 1;
 	  }
@@ -811,6 +812,7 @@ tcp_receiver (void* v_ct)
 	    }
 	  else
 	    {
+	      printlog("%#08X PUTTING A PACKET INTO RECV BUFFER SLOT %d", (unsigned int)ct, NFE-seq_num);
 	      buffer[(NFE-seq_num)*MAX_PKT_LEN] = packet;
 	      bufferValid[(NFE-seq_num)] = 1;
 	    }
