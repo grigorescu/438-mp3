@@ -2,7 +2,7 @@ Design Document Revisions:
 
 Message Formats
 	Upon further review, we have decided to go with a packet consisting of:
-	data/ack flag, a 10-bit sequence number, a 4-bit thread ID, an 8-bit epoch, an 8-bit length field, 252B of data, and an 8-bit CRC-8 checksum of this data. 
+	1-bit ack flag, a 10-bit sequence number, a 4-bit thread ID, an 8-bit epoch, an 8-bit length field, 251B of data, and an 8-bit CRC-8 checksum of this data. 
 
 Window Data Structure
 	This has remained the same as outlined in our Design Document.  Send and Receive Windows coordinate the reliability.
@@ -22,3 +22,11 @@ Fairness
 	
 Channel Release
 	We kept our channel release implementation the same as we had outlined in the Design Document.  When a channel is no longer needed, the lock is released.
+	
+Experimental Results:
+	
+	We played around with Wireshark on two virtual machines we had set up to get this to work intially.
+	Furthermore, we did testing with concurrency to see if the the channels were working.
+	We tested this by running multiple requests at the same time and seeing that they all came back.
+	After deciding that this was working, we began work on testing the Sliding Window Protocol.
+	We used the garbler and other added functionality in relay to test that we were getting some reliability.
