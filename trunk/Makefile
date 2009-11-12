@@ -12,7 +12,7 @@ fq.o: fq.c fq.h
 	gcc ${CFLAGS} fq.c
 
 clean::
-	rm -f relay.o fq.o *~
+	rm -f relay relay.o fq.o *~
 
 clear: clean
 	rm -f relay
