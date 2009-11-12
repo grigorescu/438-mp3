@@ -495,7 +495,7 @@ tcp_sender (void* v_ct)
 
 	    /* Read data from the TCP connection.  Deactivate channel
 	       if any error occurs. */
-	    if ((len = read (ct->fd, packet + 4, MAX_PKT_LEN - 4)) < 0) {
+	    if ((len = read (ct->fd, packet + 4, MAX_PKT_LEN - 5)) < 0) {
 		deactivate_channel (ct, CLOSE_CHANNEL_SENDER);
 		printlog ("%#08X READ FAILED IN TCP_SENDER", (unsigned int)ct);
 		is_active = 0;
@@ -505,16 +505,17 @@ tcp_sender (void* v_ct)
 	    /* Check for TCP connection closure. */
 	    if (len == 0)
 		tcp_closed = 1;
-
+	    printlog(" ^^^^^^^^^^ ZEROING OUT REST OF PACKET, FROM %d TO %d", len+4, MAX_PKT_LEN-1);
 	    /* Fill in the header. */
+	    for (i = len+4; i<MAX_PKT_LEN-1; i+=1) 
+	      packet[i] = 0;                       //zero out the rest
 	    PKT_MAKE_HEADER (packet, 0, tcp_closed, ct->number, SEQ, ct->epoch, len);
 	    SEQ = NEXT_SEQ_NUM (SEQ);
-
 	    /* Send the packet, ignoring errors. */
-	    (void)send (uct->fd, packet, len + 2, 0);
+	    (void)send (uct->fd, packet, 256, 0);
 	    printlog ("%#08X TCP_SENDER SENT PACKET %02X:%02X%s(%d bytes)",
 		  (unsigned int)ct, PKT_EPOCH (packet), PKT_SEQ_NUM (packet), 
-		  (PKT_IS_LAST (packet) ? " LAST " : " "), len + 2);
+		  (PKT_IS_LAST (packet) ? " LAST " : " "), 256);
 	}
 
 	/* Check for incoming ACK on queue. */
@@ -742,9 +743,7 @@ tcp_receiver (void* v_ct)
 	       added, it's not worth adding another synchronization round 
 	       to verify channel activation. */
 	  
-	  //Also if CRC doesn't match up.
-	  
-	  if (!is_active || (epoch = PKT_EPOCH (packet)) != ct->epoch || PKT_CRC(packet) != calculate_crc8(packet,255))
+	  if (!is_active || (epoch = PKT_EPOCH (packet)) != ct->epoch)
 		continue;
 	} else {
 	    /* Forwarding mode: the first packet received for this epoch,
@@ -802,7 +801,7 @@ tcp_receiver (void* v_ct)
 	      bufferValid[SWP_BUFFER_SIZE-1] = 0;
 
 	      /* If so, write packet to TCP socket. */
-	      if (my_write (ct->fd, packet + 4, len - 4) != len - 4) {
+	      if (my_write (ct->fd, packet + 4, len - 5) != len - 5) {
 		/* Write failed!  Close the connection. */
 		printlog ("%#08X WRITE FAILED IN TCP_RECEIVER", (unsigned int)ct);
 		deactivate_channel (ct, CLOSE_CHANNEL_RECEIVER);
@@ -825,8 +824,10 @@ tcp_receiver (void* v_ct)
 
 	/* Send an ACK.  With our structures, we can simply return
 	   the first three bytes of the packet.  We ignore errors. */
-	(void)send (uct->fd, packet, 3, 0);
-	printlog ("%#08X TCP_RECEIVER SENT ACK %02X:%02X%s(3 bytes)",
+	PKT_MAKE_HEADER (packet, 1, 0, ct->number, seq_num, epoch, len);
+
+	(void)send (uct->fd, packet, 256, 0);
+	printlog ("%#08X TCP_RECEIVER SENT ACK %02X:%02X%s(256 bytes)",
 	      (unsigned int)ct, PKT_EPOCH (packet), PKT_SEQ_NUM (packet), 
 	      (PKT_IS_LAST (packet) ? " LAST " : " "));
 
@@ -865,12 +866,15 @@ udp_receiver (void* v_uct)
 	if ((len = mp3_recvfrom (uct->fd, packet, MAX_PKT_LEN, 0,(struct sockaddr*)&trash, &tlen)) >= 0) 
 	  {
 	    chanNum = PKT_CHAN_NUM(packet);
-	    if ((rv = fq_enqueue (udpchans[chanNum]->recv, packet, len, &udpchans[chanNum]->recv_cond,
-				  &udpchans[chanNum]->recv_lock)) != FQ_OK &&
-		rv != FQ_ITEM_DISCARDED) {
+	    printlog("XXXX Received packet of length %02X, chanNum %02X, CRC %02X (actual: %02X)", len, chanNum, PKT_CRC(packet), calculate_crc8(packet,255));
+	      if ((rv = fq_enqueue (udpchans[chanNum]->recv, packet, len, &udpchans[chanNum]->recv_cond,
+				    &udpchans[chanNum]->recv_lock)) != FQ_OK &&
+		  rv != FQ_ITEM_DISCARDED) {
 		fq_error ("fq_enqueue failed in udp_receiver", rv);
 		exit (EXIT_PANIC);
 	    }
+	    else
+	      printlog("*** CRC FAIL!  Expected %02X, received %02X.", calculate_crc8(packet,255), PKT_CRC(packet));
 	}
     }
 }
@@ -1018,16 +1022,14 @@ init_channels (pthread_attr_t* attr, int base_port,
 	udp_init (&chan_tab[i].udp[0], filedes);
 	udp_init (&chan_tab[i].udp[1], filedes);
 
-	udpchans[2*i] = &chan_tab[i].udp[0];
-	udpchans[2*i+1] = &chan_tab[i].udp[1];
+	udpchans[2*i] = &chan_tab[i].udp[1];
+	udpchans[2*i+1] = &chan_tab[i].udp[0];
 
-	if (pthread_create (&chan_tab[i].helper_id, attr, tcp_helper,
-				&chan_tab[i]) != 0 ||
-	    pthread_create (&trash, attr, tcp_receiver,
-				&chan_tab[i]) != 0 ||
+	if (pthread_create (&chan_tab[i].helper_id, attr, tcp_helper,&chan_tab[i]) != 0 ||
+	    pthread_create (&trash, attr, tcp_receiver,	&chan_tab[i]) != 0 ||
 	    pthread_create (&trash, attr, tcp_sender, &chan_tab[i]) != 0 ){
-	    fputs ("pthread create failed\n", stderr);
-	    exit (EXIT_PANIC);
+	  fputs ("pthread create failed\n", stderr);
+	  exit (EXIT_PANIC);
 	    }
     }
     if (pthread_create (&trash, attr, udp_receiver, &chan_tab[0].udp[0]) != 0) {
